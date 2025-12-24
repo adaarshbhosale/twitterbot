@@ -11,9 +11,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10' # Updated for 2025
       - name: Install Tools
-        run: pip install tweepy google-generativeai feedparser
+        run: pip install tweepy google-genai feedparser # Using the NEW google-genai
       - name: Post Tweet
         env:
           X_API_KEY: ${{ secrets.X_API_KEY }}
