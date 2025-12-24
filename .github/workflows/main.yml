@@ -22,3 +22,10 @@ jobs:
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python bot.py
+- name: Commit and Push Memory
+        run: |
+          git config --global user.name "ArsenalBot"
+          git config --global user.email "bot@github.com"
+          git add last_post_id.txt || true
+          git commit -m "Update last post ID" || true
+          git push
