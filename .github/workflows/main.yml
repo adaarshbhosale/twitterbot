@@ -1,20 +1,30 @@
-name: Arsenal Bot
+name: Arsenal Bot 2025
+
 on:
   schedule:
-    - cron: '0 * * * *' # Runs every hour
-  workflow_dispatch: # Allows you to run it manually
+    - cron: '*/30 * * * *'  # Wakes up every 30 minutes
+  workflow_dispatch:      # Allows you to run it manually for testing
+
 jobs:
-  run-bot:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write     # Crucial for saving the "Memory" files
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Checkout Repo
+        uses: actions/checkout@v4
         with:
-          python-version: '3.10' # Updated for 2025
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
       - name: Install Tools
-        run: pip install tweepy google-genai feedparser # Using the NEW google-genai
-      - name: Post Tweet
+        run: pip install tweepy google-genai feedparser requests
+
+      - name: Run Bot
         env:
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
@@ -22,10 +32,11 @@ jobs:
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python bot.py
-      - name: Commit and Push Memory
+
+      - name: Save Memory and Counter
         run: |
           git config --global user.name "ArsenalBot"
           git config --global user.email "bot@github.com"
-          git add last_post_id.txt || true
-          git commit -m "Update last post ID" || true
-          git push
+          git add last_post_id.txt tweet_count.txt || true
+          git commit -m "Update memory and monthly count" || true
+          git push || echo "No changes to commit"
