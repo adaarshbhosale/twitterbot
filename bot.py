@@ -50,7 +50,7 @@ def post_tweet():
         # AI Rewrite Logic
         prompt = f"Rewrite this Arsenal update in a high-energy, engaging way for a fan page. Add 1-2 emojis and #AFC. Max 280 chars: {news_text}"
         response = gemini_client.models.generate_content(
-            model='gemini-1.5-flash', 
+            model='gemini-2.5-flash-lite', 
             contents=prompt
         )
         
