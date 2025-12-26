@@ -3,41 +3,15 @@ from google import genai
 import feedparser
 import os
 import requests
-import random
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 
-FEEDS = [
-    "https://rss.app/feeds/JZozOSCPSSRNwBWU.xml",
-    "https://rss.app/feeds/DbNVy1zAb9BKCHOR.xml",
-    "https://rss.app/feeds/3T2tQIIEbKrC5dBM.xml",
-    "https://rss.app/feeds/vin9tnvcQJ1qBRhU.xml",
-    "https://rss.app/feeds/eXc8beioBXJg6dsf.xml"
-]
+# --- CONFIGURATION ---
+TARGET_RSS_FEED = "https://rss.app/feeds/rlQPF5J5AVC4Vunv.xml"
 
 def post_tweet():
     try:
-        # 1. MONTHLY LIMIT CHECK (500/month)
-        current_month = datetime.now().strftime("%Y-%m")
-        count_file = "tweet_count.txt"
-        count = 0
-        if os.path.exists(count_file):
-            with open(count_file, "r") as f:
-                data = f.read().split(",")
-                if len(data) == 2 and data[0] == current_month:
-                    count = int(data[1])
-        
-        if count >= 500:
-            print(f"Limit reached ({count}/500) for {current_month}. Stopping.")
-            return
-
-        # 2. RANDOM TIMING LOGIC (70% chance to run)
-        # This makes the 30-min schedule look unpredictable
-        if random.random() > 0.7:
-            print("Random skip triggered to keep timing natural.")
-            return
-
-        # 3. SETUP APIS
-        # We use v1.1 for images and v2 for text
+        # 1. SETUP APIS
         auth = tweepy.OAuth1UserHandler(
             os.getenv("X_API_KEY"), os.getenv("X_API_SECRET"),
             os.getenv("X_ACCESS_TOKEN"), os.getenv("X_ACCESS_SECRET")
@@ -51,57 +25,72 @@ def post_tweet():
         )
         gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-        # 4. GET LATEST NEWS
-        all_news = []
-        for url in FEEDS:
-            feed = feedparser.parse(url)
-            if feed.entries: all_news.extend(feed.entries)
-        
-        if not all_news: return
-        all_news.sort(key=lambda x: x.get('published_parsed', 0), reverse=True)
-        latest = all_news[0]
-        
-        # Check Memory (Duplicate Check)
-        if os.path.exists("last_post_id.txt"):
-            with open("last_post_id.txt", "r") as f:
-                if f.read().strip() == latest.link:
-                    print("News already posted. Skipping.")
-                    return
+        # 2. GET FEED ENTRIES
+        feed = feedparser.parse(TARGET_RSS_FEED)
+        if not feed.entries:
+            print("No entries found.")
+            return
 
-        # 5. IMAGE DETECTION
-        media_id = None
-        img_url = None
-        # Try finding image in common RSS tags
-        if 'media_content' in latest: img_url = latest.media_content[0]['url']
-        elif 'links' in latest:
-            for l in latest.links:
-                if 'image' in l.get('type',''): img_url = l.href
+        # Process from oldest to newest to ensure chronological order
+        for entry in reversed(feed.entries):
+            
+            # Check Memory (Duplicate Check)
+            if os.path.exists("last_post_id.txt"):
+                with open("last_post_id.txt", "r") as f:
+                    if entry.link in f.read():
+                        continue
 
-        if img_url:
-            print(f"Downloading image: {img_url}")
-            img_data = requests.get(img_url).content
-            with open("temp.jpg", "wb") as f: f.write(img_data)
-            media = api_v1.media_upload("temp.jpg")
-            media_id = media.media_id
+            # 3. ENFORCE 3-MINUTE DELAY
+            # Convert published time to UTC datetime
+            published_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            seconds_since_post = (now - published_time).total_seconds()
+            
+            if seconds_since_post < 180:
+                wait_time = 180 - seconds_since_post
+                print(f"Waiting {wait_needed:.0f}s to reach the 3-minute mark...")
+                time.sleep(wait_time)
 
-        # 6. AI REWRITE (2025 Model)
-        prompt = f"Passionately rewrite this Arsenal update for a fan page. Use British fan slang, emojis, and #AFC. Max 270 chars: {latest.title}"
-        response = gemini.models.generate_content(model='gemini-2.5-flash-lite', contents=prompt)
-        tweet_text = response.text.strip()[:270]
+            # 4. IMAGE DETECTION (RSS.app format)
+            media_id = None
+            img_url = None
+            
+            # Check common media tags in RSS.app
+            if 'media_content' in entry:
+                img_url = entry.media_content[0]['url']
+            elif 'links' in entry:
+                for link in entry.links:
+                    if 'image' in link.get('type', ''):
+                        img_url = link.href
 
-        # 7. POST & UPDATE MEMORY
-        if media_id:
-            client_v2.create_tweet(text=tweet_text, media_ids=[media_id])
-        else:
-            client_v2.create_tweet(text=tweet_text)
+            if img_url:
+                print(f"Downloading image: {img_url}")
+                img_resp = requests.get(img_url)
+                if img_resp.status_code == 200:
+                    with open("temp.jpg", "wb") as f:
+                        f.write(img_resp.content)
+                    media = api_v1.media_upload("temp.jpg")
+                    media_id = media.media_id
+                    os.remove("temp.jpg")
 
-        with open("last_post_id.txt", "w") as f: f.write(latest.link)
-        with open(count_file, "w") as f: f.write(f"{current_month},{count + 1}")
-        
-        print(f"Success! Monthly Count: {count + 1}")
+            # 5. AI REWRITE (No monthly limits)
+            prompt = f"Rewrite this update for a fan page. Keep all facts and links exactly the same, but change the wording. Max 275 characters: {entry.title}"
+            ai_response = gemini.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+            tweet_text = ai_response.text.strip()[:275]
+
+            # 6. POST TO X
+            if media_id:
+                client_v2.create_tweet(text=tweet_text, media_ids=[media_id])
+            else:
+                client_v2.create_tweet(text=tweet_text)
+
+            # Update Memory
+            with open("last_post_id.txt", "a") as f:
+                f.write(entry.link + "\n")
+            print(f"Success! Posted: {entry.link}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error occurred: {e}")
 
 if __name__ == "__main__":
     post_tweet()
