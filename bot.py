@@ -1,5 +1,6 @@
 import tweepy
 from google import genai
+from google.api_core import exceptions
 import feedparser
 import os
 import requests
@@ -31,31 +32,28 @@ def post_tweet():
             print("No entries found.")
             return
 
-        # Process from oldest to newest to ensure chronological order
+        # Process from oldest to newest
         for entry in reversed(feed.entries):
             
-            # Check Memory (Duplicate Check)
+            # Memory Check
             if os.path.exists("last_post_id.txt"):
                 with open("last_post_id.txt", "r") as f:
                     if entry.link in f.read():
                         continue
 
-            # 3. ENFORCE 3-MINUTE DELAY
-            # Convert published time to UTC datetime
+            # 3. ENFORCE 3-MINUTE DELAY (Wait for the post to 'age')
             published_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
             seconds_since_post = (now - published_time).total_seconds()
             
             if seconds_since_post < 180:
-                wait_time = 180 - seconds_since_post
+                wait_needed = 180 - seconds_since_post
                 print(f"Waiting {wait_needed:.0f}s to reach the 3-minute mark...")
-                time.sleep(wait_time)
+                time.sleep(wait_needed)
 
-            # 4. IMAGE DETECTION (RSS.app format)
+            # 4. IMAGE DETECTION
             media_id = None
             img_url = None
-            
-            # Check common media tags in RSS.app
             if 'media_content' in entry:
                 img_url = entry.media_content[0]['url']
             elif 'links' in entry:
@@ -64,7 +62,6 @@ def post_tweet():
                         img_url = link.href
 
             if img_url:
-                print(f"Downloading image: {img_url}")
                 img_resp = requests.get(img_url)
                 if img_resp.status_code == 200:
                     with open("temp.jpg", "wb") as f:
@@ -73,10 +70,25 @@ def post_tweet():
                     media_id = media.media_id
                     os.remove("temp.jpg")
 
-            # 5. AI REWRITE (No monthly limits)
-            prompt = f"Rewrite this update for a fan page. Keep all facts and links exactly the same, but change the wording. Max 275 characters: {entry.title}"
-            ai_response = gemini.models.generate_content(model='gemini-2.0-flash', contents=prompt)
-            tweet_text = ai_response.text.strip()[:275]
+            # 5. AI REWRITE WITH RETRY LOGIC (Gemini 2.0 Flash-Lite)
+            prompt = f"Rewrite this update for a fan page. Keep facts/links the same. Max 275 chars: {entry.title}"
+            
+            tweet_text = ""
+            for attempt in range(3): # Try up to 3 times
+                try:
+                    ai_response = gemini.models.generate_content(
+                        model='gemini-2.0-flash-lite', 
+                        contents=prompt
+                    )
+                    tweet_text = ai_response.text.strip()[:275]
+                    break 
+                except exceptions.ResourceExhausted:
+                    print(f"Rate limit hit. Waiting 30s (Attempt {attempt+1}/3)...")
+                    time.sleep(30)
+            
+            if not tweet_text:
+                print("Skipping tweet due to AI quota issues.")
+                continue
 
             # 6. POST TO X
             if media_id:
@@ -88,6 +100,10 @@ def post_tweet():
             with open("last_post_id.txt", "a") as f:
                 f.write(entry.link + "\n")
             print(f"Success! Posted: {entry.link}")
+            
+            # 7. ADD SMALL BREATHING ROOM BETWEEN POSTS
+            print("Sleeping for 15s to respect API speed limits...")
+            time.sleep(15)
 
     except Exception as e:
         print(f"Error occurred: {e}")
