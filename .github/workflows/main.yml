@@ -2,25 +2,25 @@ name: Arsenal Bot 2025
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # Runs every 10 minutes
-  workflow_dispatch:      # Allows you to click "Run workflow" manually
+    - cron: '*/5 * * * *'  # Runs every 5 minutes for nearly "instant" updates
+  workflow_dispatch:      # Allows you to click "Run workflow" manually to test
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write     # Gives the bot permission to save the last post URL
+      contents: write     # CRITICAL: Allows the bot to save which posts it has already seen
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Required for pushing memory updates back to the repo
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install Dependencies
         run: |
@@ -34,14 +34,14 @@ jobs:
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python bot.py  # Make sure your script is named bot.py
+        run: python bot.py
 
       - name: Save Memory
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Only commit if last_post_id.txt changed
+          # This saves the last_post_id.txt so the bot doesn't repost old news
           if [ -f last_post_id.txt ]; then
             git add last_post_id.txt
             git commit -m "chore: update last post ID [skip ci]" || echo "No changes to commit"
