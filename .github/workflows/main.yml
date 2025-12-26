@@ -2,20 +2,20 @@ name: Arsenal Bot 2025
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Runs every 5 minutes
-  workflow_dispatch:      # Allows manual testing
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write     # Required to save last_post_id.txt
+      contents: write
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Required to see history for syncing
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -41,15 +41,10 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 1. Fetch latest changes from GitHub in case another run finished just now
-          git fetch origin main
-          
-          # 2. Rebase our local change (last_post_id.txt) on top of those changes
-          git pull --rebase origin main
-          
-          # 3. Save the new memory
           if [ -f last_post_id.txt ]; then
+            # The autostash flag handles changes made while pulling
+            git pull --rebase --autostash origin main
             git add last_post_id.txt
-            git commit -m "chore: update last post ID [skip ci]" || echo "No changes to commit"
+            git commit -m "chore: update last post ID [skip ci]" || echo "No changes"
             git push origin main
           fi
