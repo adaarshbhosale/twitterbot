@@ -1,6 +1,10 @@
 import tweepy
 from google import genai
-from google.api_core import exceptions
+try:
+    from google.api_core import exceptions
+except ImportError:
+    # Fallback for certain environments
+    from google.rpc import status_pb2 as exceptions 
 import feedparser
 import os
 import requests
@@ -32,16 +36,14 @@ def post_tweet():
             print("No entries found.")
             return
 
-        # Process from oldest to newest
         for entry in reversed(feed.entries):
-            
             # Memory Check
             if os.path.exists("last_post_id.txt"):
                 with open("last_post_id.txt", "r") as f:
                     if entry.link in f.read():
                         continue
 
-            # 3. ENFORCE 3-MINUTE DELAY (Wait for the post to 'age')
+            # 3. ENFORCE 3-MINUTE DELAY
             published_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
             seconds_since_post = (now - published_time).total_seconds()
@@ -70,11 +72,11 @@ def post_tweet():
                     media_id = media.media_id
                     os.remove("temp.jpg")
 
-            # 5. AI REWRITE WITH RETRY LOGIC (Gemini 2.0 Flash-Lite)
+            # 5. AI REWRITE (Using Flash-Lite for higher limits)
             prompt = f"Rewrite this update for a fan page. Keep facts/links the same. Max 275 chars: {entry.title}"
             
             tweet_text = ""
-            for attempt in range(3): # Try up to 3 times
+            for attempt in range(3):
                 try:
                     ai_response = gemini.models.generate_content(
                         model='gemini-2.0-flash-lite', 
@@ -82,12 +84,15 @@ def post_tweet():
                     )
                     tweet_text = ai_response.text.strip()[:275]
                     break 
-                except exceptions.ResourceExhausted:
-                    print(f"Rate limit hit. Waiting 30s (Attempt {attempt+1}/3)...")
-                    time.sleep(30)
+                except Exception as e:
+                    if "429" in str(e) or "ResourceExhausted" in str(e):
+                        print(f"Rate limit hit. Waiting 30s (Attempt {attempt+1}/3)...")
+                        time.sleep(30)
+                    else:
+                        print(f"AI Error: {e}")
+                        break
             
             if not tweet_text:
-                print("Skipping tweet due to AI quota issues.")
                 continue
 
             # 6. POST TO X
@@ -101,8 +106,7 @@ def post_tweet():
                 f.write(entry.link + "\n")
             print(f"Success! Posted: {entry.link}")
             
-            # 7. ADD SMALL BREATHING ROOM BETWEEN POSTS
-            print("Sleeping for 15s to respect API speed limits...")
+            # Breathing room
             time.sleep(15)
 
     except Exception as e:
