@@ -3,99 +3,100 @@ from google import genai
 import feedparser
 import os
 import requests
+import re
 import time
-from datetime import datetime, timezone
 
 # --- CONFIGURATION ---
 TARGET_RSS_FEED = "https://rss.app/feeds/rlQPF5J5AVC4Vunv.xml"
 
-def post_tweet():
+def get_view_count(entry):
+    """Extracts numeric views from the RSS entry description/summary."""
+    text = entry.get('summary', '') + entry.get('description', '')
+    # Searches for patterns like '12.5K views', '1,200 views', or '500 views'
+    match = re.search(r'([\d,.]+K?M?)\s*views', text, re.IGNORECASE)
+    if not match:
+        return 0
+    
+    val_str = match.group(1).upper().replace(',', '')
+    try:
+        if 'M' in val_str:
+            return float(val_str.replace('M', '')) * 1_000_000
+        if 'K' in val_str:
+            return float(val_str.replace('K', '')) * 1_000
+        return float(val_str)
+    except:
+        return 0
+
+def post_best_tweet():
     try:
         # 1. SETUP APIS
-        auth = tweepy.OAuth1UserHandler(
-            os.getenv("X_API_KEY"), os.getenv("X_API_SECRET"),
-            os.getenv("X_ACCESS_TOKEN"), os.getenv("X_ACCESS_SECRET")
-        )
+        auth = tweepy.OAuth1UserHandler(os.getenv("X_API_KEY"), os.getenv("X_API_SECRET"), os.getenv("X_ACCESS_TOKEN"), os.getenv("X_ACCESS_SECRET"))
         api_v1 = tweepy.API(auth)
-        client_v2 = tweepy.Client(
-            consumer_key=os.getenv("X_API_KEY"),
-            consumer_secret=os.getenv("X_API_SECRET"),
-            access_token=os.getenv("X_ACCESS_TOKEN"),
-            access_token_secret=os.getenv("X_ACCESS_SECRET")
-        )
+        client_v2 = tweepy.Client(consumer_key=os.getenv("X_API_KEY"), consumer_secret=os.getenv("X_API_SECRET"), access_token=os.getenv("X_ACCESS_TOKEN"), access_token_secret=os.getenv("X_ACCESS_SECRET"))
         gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-        # 2. GET FEED ENTRIES
+        # 2. FETCH AND FILTER NEW POSTS
         print("Fetching RSS feed...", flush=True)
         feed = feedparser.parse(TARGET_RSS_FEED)
-        if not feed.entries:
-            print("No entries found in feed.", flush=True)
+        new_entries = []
+
+        # Load history
+        history = ""
+        if os.path.exists("last_post_id.txt"):
+            with open("last_post_id.txt", "r") as f:
+                history = f.read()
+
+        for entry in feed.entries:
+            if entry.link not in history:
+                entry.view_score = get_view_count(entry)
+                new_entries.append(entry)
+
+        if not new_entries:
+            print("No new posts found.", flush=True)
             return
 
-        # Process entries (Oldest to newest)
-        for entry in reversed(feed.entries):
-            
-            # Memory Check (Don't repost same thing)
-            if os.path.exists("last_post_id.txt"):
-                with open("last_post_id.txt", "r") as f:
-                    if entry.link in f.read():
-                        continue
+        # 3. SELECT THE "BEST" ONE
+        # Sort by view_score descending and pick the top one
+        best_entry = max(new_entries, key=lambda x: x.view_score)
+        print(f"Top post selected with {best_entry.view_score} views: {best_entry.link}", flush=True)
 
-            print(f"New post found: {entry.link}", flush=True)
+        # 4. DOWNLOAD IMAGE
+        media_id = None
+        img_url = None
+        if 'media_content' in best_entry: img_url = best_entry.media_content[0]['url']
+        elif 'links' in best_entry:
+            for link in best_entry.links:
+                if 'image' in link.get('type', ''): img_url = link.href
 
-            # 3. IMAGE DETECTION
-            media_id = None
-            img_url = None
-            if 'media_content' in entry:
-                img_url = entry.media_content[0]['url']
-            elif 'links' in entry:
-                for link in entry.links:
-                    if 'image' in link.get('type', ''):
-                        img_url = link.href
+        if img_url:
+            print(f"Downloading image...", flush=True)
+            img_resp = requests.get(img_url)
+            if img_resp.status_code == 200:
+                with open("temp.jpg", "wb") as f: f.write(img_resp.content)
+                media = api_v1.media_upload("temp.jpg")
+                media_id = media.media_id
+                os.remove("temp.jpg")
 
-            if img_url:
-                print(f"Downloading image: {img_url}", flush=True)
-                img_resp = requests.get(img_url)
-                if img_resp.status_code == 200:
-                    with open("temp.jpg", "wb") as f:
-                        f.write(img_resp.content)
-                    media = api_v1.media_upload("temp.jpg")
-                    media_id = media.media_id
-                    os.remove("temp.jpg")
+        # 5. AI REWRITE
+        print("AI Rewriting...", flush=True)
+        tweet_text = best_entry.title[:275] # Fallback
+        try:
+            ai_resp = gemini.models.generate_content(model='gemini-2.0-flash-lite', contents=f"Rewrite for fans: {best_entry.title}")
+            tweet_text = ai_resp.text.strip()[:275]
+        except: pass
 
-            # 4. AI REWRITE (Using Flash-Lite for high limits)
-            print("Requesting AI rewrite...", flush=True)
-            prompt = f"Rewrite this update for a fan page. Keep facts/links the same. Max 275 chars: {entry.title}"
-            
-            tweet_text = ""
-            try:
-                ai_response = gemini.models.generate_content(
-                    model='gemini-2.0-flash-lite', 
-                    contents=prompt
-                )
-                tweet_text = ai_response.text.strip()[:275]
-            except Exception as e:
-                print(f"AI Error: {e}", flush=True)
-                # Fallback: Post original title if AI fails
-                tweet_text = entry.title[:275]
+        # 6. POST TO X
+        print("Posting to X...", flush=True)
+        client_v2.create_tweet(text=tweet_text, media_ids=[media_id] if media_id else None)
 
-            # 5. POST TO X
-            print("Posting to X...", flush=True)
-            if media_id:
-                client_v2.create_tweet(text=tweet_text, media_ids=[media_id])
-            else:
-                client_v2.create_tweet(text=tweet_text)
-
-            # Update Memory
-            with open("last_post_id.txt", "a") as f:
-                f.write(entry.link + "\n")
-            print(f"Successfully posted: {entry.link}", flush=True)
-            
-            # Small 5-second gap if multiple posts are processed at once
-            time.sleep(5)
+        # 7. UPDATE MEMORY (Mark ALL found entries as seen so we don't post them next time)
+        with open("last_post_id.txt", "a") as f:
+            for e in new_entries:
+                f.write(e.link + "\n")
+        print("Success!", flush=True)
 
     except Exception as e:
-        print(f"Global Error: {e}", flush=True)
+        print(f"Error: {e}", flush=True)
 
 if __name__ == "__main__":
-    post_tweet()
+    post_best_tweet()
