@@ -1,0 +1,4 @@
+tweepy
+google-genai
+feedparser
+requests
